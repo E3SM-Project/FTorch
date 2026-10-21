@@ -3,6 +3,7 @@
  * (https://pytorch.org/cppdocs) and more specifically the C++ API documentation
  * (https://pytorch.org/cppdocs/api/library_root.html) pages on the PyTorch website.
  */
+#include <torch/nn/functional/loss.h>
 #include <torch/script.h>
 #include <torch/torch.h>
 
@@ -35,7 +36,7 @@ void ctorch_warn(const std::string &message) {
 // --- Constant expressions
 // =============================================================================
 
-// Mapping from FTorch device_data_t to libtorch Dtype
+// Mapping from FTorch torch_data_t to libtorch Dtype
 constexpr auto get_libtorch_dtype(torch_data_t dtype) {
   switch (dtype) {
   case torch_kUInt8:
@@ -62,7 +63,7 @@ constexpr auto get_libtorch_dtype(torch_data_t dtype) {
   }
 }
 
-// Mapping from libtorch Dtype to FTorch device_data_t
+// Mapping from libtorch Dtype to FTorch torch_data_t
 torch_data_t get_ftorch_dtype(caffe2::TypeMeta dtype) {
   if (dtype == torch::kUInt8) {
     ctorch_error("uint8 not supported in Fortran");
@@ -90,7 +91,7 @@ torch_data_t get_ftorch_dtype(caffe2::TypeMeta dtype) {
   return torch_kFloat32; // Dummy return to satisfy the compiler
 }
 
-// Mapping from FTorch device_type_t to libtorch DeviceType
+// Mapping from FTorch torch_device_t to libtorch DeviceType
 const auto get_libtorch_device(torch_device_t device_type, int device_index) {
   switch (device_type) {
   case torch_kCPU:
@@ -138,7 +139,7 @@ const auto get_libtorch_device(torch_device_t device_type, int device_index) {
   }
 }
 
-// Mapping from libtorch DeviceType to FTorch device_type_t
+// Mapping from libtorch DeviceType to FTorch torch_device_t
 const torch_device_t get_ftorch_device(torch::DeviceType device_type) {
   switch (device_type) {
   case torch::kCPU:
@@ -155,6 +156,25 @@ const torch_device_t get_ftorch_device(torch::DeviceType device_type) {
     std::cerr << "[ERROR]: device type " << device_type << " not implemented in FTorch"
               << std::endl;
     exit(EXIT_FAILURE);
+  }
+}
+
+// Mapping from FTorch torch_reduction_t to libtorch reduction type.
+// torch::kNone, torch::kMean, and torch::kSum are distinct struct types in the
+// Torch C++ API (see torch/csrc/api/include/torch/enum.h), so the return type
+// must be the variant torch::nn::MSELossOptions::reduction_t.
+torch::nn::MSELossOptions::reduction_t
+get_libtorch_reduction_type(torch_reduction_t reduction_type) {
+  switch (reduction_type) {
+  case torch_kNone:
+    return torch::kNone;
+  case torch_kMean:
+    return torch::kMean;
+  case torch_kSum:
+    return torch::kSum;
+  default:
+    ctorch_warn("unknown reduction type, setting to torch_kMean");
+    return torch::kMean;
   }
 }
 
@@ -499,9 +519,9 @@ void torch_tensor_zero_grad(torch_tensor_t tensor) {
   t->mutable_grad().zero_();
 }
 
-void torch_tensor_backward(const torch_tensor_t tensor,
-                           const torch_tensor_t external_gradient,
-                           const bool retain_graph) {
+void torch_tensor_backward_with_external_gradient(
+    const torch_tensor_t tensor, const torch_tensor_t external_gradient,
+    const bool retain_graph) {
   auto t = reinterpret_cast<torch::Tensor *>(tensor);
   auto g = reinterpret_cast<torch::Tensor *const>(external_gradient);
 
@@ -510,8 +530,29 @@ void torch_tensor_backward(const torch_tensor_t tensor,
     validate_tensor(t, "Input tensor");
     validate_tensor(g, "External gradient");
 
+    // Check if the input tensor has the requires_grad property
+    validate_requires_grad(t, "Input tensor");
+
     // Perform backwards step
     t->backward(*g, retain_graph);
+  } catch (const std::exception &e) {
+    ctorch_error(std::string(e.what()) + " in torch_tensor_backward");
+  }
+}
+
+void torch_tensor_backward_without_external_gradient(const torch_tensor_t tensor,
+                                                     const bool retain_graph) {
+  auto t = reinterpret_cast<torch::Tensor *>(tensor);
+
+  try {
+    // Check if the input tensor is valid and defined
+    validate_tensor(t, "Input tensor");
+
+    // Check if the input tensor has the requires_grad property
+    validate_requires_grad(t, "Input tensor");
+
+    // Perform backwards step
+    t->backward({}, retain_graph);
   } catch (const std::exception &e) {
     ctorch_error(std::string(e.what()) + " in torch_tensor_backward");
   }
@@ -535,6 +576,149 @@ void torch_tensor_get_gradient(const torch_tensor_t tensor, torch_tensor_t gradi
   } catch (const std::exception &e) {
     ctorch_error(std::string(e.what()) + " in torch_tensor_get_gradient");
   }
+}
+
+// =============================================================================
+// --- Torch optimizers API
+// =============================================================================
+
+// Check if an optimizer is valid
+void validate_optimizer(const torch_optim_t optim, const std::string &name) {
+  if (!optim) {
+    throw std::invalid_argument(name + " is null.");
+  }
+}
+
+// Function to create an SGD optimizer and return a pointer to it
+torch_optim_t torch_optim_SGD(const torch_tensor_t *parameters, const int npar,
+                              const double learning_rate, const double momentum = 0.0,
+                              const double dampening = 0.0,
+                              const double weight_decay = 0.0,
+                              const bool nesterov = false) {
+  try {
+    // Cast the parameters pointer into Tensor objects
+    auto params = reinterpret_cast<torch::Tensor *const *>(parameters);
+
+    // Generate a vector of Tensors populated from parameters
+    std::vector<torch::Tensor> parameters_vec;
+    for (int i = 0; i < npar; ++i) {
+      validate_tensor(params[i],
+                      "Parameter at index " + std::to_string(i) + "in torch_optim_SGD");
+      parameters_vec.push_back(*(params[i]));
+    }
+
+    // Set up options
+    auto options = torch::optim::SGDOptions(learning_rate)
+                       .momentum(momentum)
+                       .dampening(dampening)
+                       .weight_decay(weight_decay)
+                       .nesterov(nesterov);
+
+    // Create the optimizer and cast to torch_optim_t to return
+    auto optimizer_SGD = new torch::optim::SGD(parameters_vec, options);
+    return static_cast<torch_optim_t>(optimizer_SGD);
+  } catch (const std::exception &e) {
+    ctorch_error(std::string(e.what()) + " in torch_optim_SGD");
+  }
+  return nullptr; // Return null in case of error
+}
+
+// Function to create an Adam optimizer and return a pointer to it
+torch_optim_t torch_optim_Adam(const torch_tensor_t *parameters, const int npar,
+                               const double learning_rate, const double beta_1 = 0.9,
+                               const double beta_2 = 0.999, const double eps = 1e-8,
+                               const double weight_decay = 0.0,
+                               const bool amsgrad = false) {
+  try {
+    // Cast the parameters pointer into Tensor objects
+    auto params = reinterpret_cast<torch::Tensor *const *>(parameters);
+
+    // Generate a vector of Tensors populated from parameters
+    std::vector<torch::Tensor> parameters_vec;
+    for (int i = 0; i < npar; ++i) {
+      validate_tensor(params[i], "Parameter at index " + std::to_string(i) +
+                                     "in torch_optim_Adam");
+      parameters_vec.push_back(*(params[i]));
+    }
+
+    // Set up options
+    auto betas_tup = std::make_tuple(beta_1, beta_2);
+    auto options = torch::optim::AdamOptions(learning_rate)
+                       .betas(betas_tup)
+                       .eps(eps)
+                       .weight_decay(weight_decay)
+                       .amsgrad(amsgrad);
+
+    // Create the optimizer and cast to torch_optim_t to return
+    auto optimizer_Adam = new torch::optim::Adam(parameters_vec, options);
+    return static_cast<torch_optim_t>(optimizer_Adam);
+  } catch (const std::exception &e) {
+    ctorch_error(std::string(e.what()) + " in torch_optim_Adam");
+  }
+  return nullptr; // Return null in case of error
+}
+
+// Function to create an AdamW optimizer and return a pointer to it
+torch_optim_t torch_optim_AdamW(const torch_tensor_t *parameters, const int npar,
+                                const double learning_rate, const double beta_1 = 0.9,
+                                const double beta_2 = 0.999, const double eps = 1e-8,
+                                const double weight_decay = 0.01,
+                                const bool amsgrad = false) {
+  try {
+    // Cast the parameters pointer into Tensor objects
+    auto params = reinterpret_cast<torch::Tensor *const *>(parameters);
+
+    // Generate a vector of Tensors populated from parameters
+    std::vector<torch::Tensor> parameters_vec;
+    for (int i = 0; i < npar; ++i) {
+      validate_tensor(params[i], "Parameter at index " + std::to_string(i) +
+                                     "in torch_optim_AdamW");
+      parameters_vec.push_back(*(params[i]));
+    }
+
+    // Set up options
+    auto betas_tup = std::make_tuple(beta_1, beta_2);
+    auto options = torch::optim::AdamWOptions(learning_rate)
+                       .betas(betas_tup)
+                       .eps(eps)
+                       .weight_decay(weight_decay)
+                       .amsgrad(amsgrad);
+
+    // Create the optimizer and cast to torch_optim_t to return
+    auto optimizer_AdamW = new torch::optim::AdamW(parameters_vec, options);
+    return static_cast<torch_optim_t>(optimizer_AdamW);
+  } catch (const std::exception &e) {
+    ctorch_error(std::string(e.what()) + " in torch_optim_AdamW");
+  }
+  return nullptr; // Return null in case of error
+}
+
+// Function to zero gradients for an optimizer
+void torch_optim_zero_grad(torch_optim_t optim) {
+  try {
+    auto optimizer = static_cast<torch::optim::Optimizer *>(optim);
+    validate_optimizer(optimizer, "Optimizer in torch_optim_zero_grad");
+    optimizer->zero_grad();
+  } catch (const std::exception &e) {
+    ctorch_error(std::string(e.what()) + " in torch_optim_zero_grad");
+  }
+}
+
+// Function to step an optimizer
+void torch_optim_step(torch_optim_t optim) {
+  try {
+    auto optimizer = static_cast<torch::optim::Optimizer *>(optim);
+    validate_optimizer(optimizer, "Optimizer in torch_optim_step");
+    optimizer->step();
+  } catch (const std::exception &e) {
+    ctorch_error(std::string(e.what()) + " in torch_optim_step");
+  }
+}
+
+// Function to delete an optimizer
+void torch_optim_delete(torch_optim_t optim) {
+  auto opt = reinterpret_cast<torch::optim::Optimizer *>(optim);
+  delete opt;
 }
 
 // =============================================================================
@@ -571,12 +755,23 @@ torch_jit_script_module_t torch_jit_load(const char *filename,
   return module;
 }
 
+void torch_jit_save(const torch_jit_script_module_t module, const char *filename) {
+  auto model = static_cast<torch::jit::script::Module *>(module);
+  try {
+    model->save(filename);
+  } catch (const torch::Error &e) {
+    ctorch_error(e.msg());
+  } catch (const std::exception &e) {
+    ctorch_error(e.what());
+  }
+}
+
 void torch_jit_module_forward(const torch_jit_script_module_t module,
                               const torch_tensor_t *inputs, const int nin,
                               torch_tensor_t *outputs, const int nout,
                               const bool requires_grad = false) {
   torch::AutoGradMode enable_grad(requires_grad);
-  // Here we cast the pointers we recieved in to Tensor objects
+  // Here we cast the pointers we recieved in to Module and Tensor objects
   auto model = static_cast<torch::jit::script::Module *>(module);
   auto in = reinterpret_cast<torch::Tensor *const *>(inputs);
   auto out = reinterpret_cast<torch::Tensor **>(outputs);
@@ -598,11 +793,32 @@ void torch_jit_module_forward(const torch_jit_script_module_t module,
     auto model_out = model->forward(inputs_vec);
     if (model_out.isTensor()) {
       // Single output models will return a tensor directly.
-      std::move(*out[0]) = model_out.toTensor();
+      // Two assignment strategies are used depending on whether gradient
+      // tracking is needed:
+      //   requires_grad=true (training):
+      //     Plain lvalue assignment selects Tensor::operator=(Tensor&&) &
+      //     This is a shallow swap that leaves the grad_fn intact so that we can
+      //     differentiate with respect to weights
+      //   requires_grad=false (inference):
+      //     std::move turns *out into an rvalue, selecting
+      //     Tensor::operator=(Tensor&&) &&
+      //     This calls copy_(), writing result data into the Fortran array (no graph
+      //     built).
+      if (requires_grad) {
+        *out[0] = model_out.toTensor();
+      } else {
+        std::move(*out[0]) = model_out.toTensor();
+      }
     } else if (model_out.isTuple()) {
       // Multiple output models will return a tuple => cast to tensors.
       for (int i = 0; i < nout; ++i) {
-        std::move(*out[i]) = model_out.toTuple()->elements()[i].toTensor();
+        auto tensor = model_out.toTuple()->elements()[i].toTensor();
+        // Same two strategies as the single-tensor branch above.
+        if (requires_grad) {
+          *out[i] = tensor;
+        } else {
+          std::move(*out[i]) = tensor;
+        }
       }
     } else {
       // If for some reason the forward method does not return a Tensor it
@@ -628,7 +844,82 @@ bool torch_jit_module_is_training(const torch_jit_script_module_t module) {
   return m->is_training();
 }
 
+void torch_jit_module_parameters(const torch_jit_script_module_t module,
+                                 torch_tensor_t *outputs, const int nout) {
+  // Cast the pointers we recieved in to Tensor objects
+  auto model = static_cast<torch::jit::script::Module *>(module);
+  auto out = reinterpret_cast<torch::Tensor **>(outputs);
+  auto parameters = model->parameters();
+  if (parameters.size() != nout) {
+    ctorch_error("Number of parameters does not match output dimension");
+  }
+  int i = 0;
+  for (auto parameter : parameters) {
+    // Allocate a new heap-based Tensor that is a shallow copy (alias) of the model
+    // parameter. Torch's copy constructor shares underlying storage, so if the model
+    // parameters are used in an optimizer then the optimizer will update the model's
+    // actual weights through this handle. In writing the address back into out[i] we
+    // assume that the associated Fortran torch_tensor is not associated (and indeed
+    // check this on the Fortran side).
+    out[i] = new torch::Tensor(parameter);
+    i++;
+  }
+}
+
 void torch_jit_module_delete(torch_jit_script_module_t module) {
   auto m = reinterpret_cast<torch::jit::script::Module *>(module);
   delete m;
+}
+
+// =============================================================================
+// --- Torch loss functions API
+// =============================================================================
+
+// Function to create an MSELoss and return a pointer to it
+void torch_loss_mse(torch_tensor_t loss, const torch_tensor_t input,
+                    const torch_tensor_t target,
+                    const torch_reduction_t reduction_type) {
+  try {
+    // Cast the parameters pointer into Tensor objects
+    auto l = reinterpret_cast<torch::Tensor *>(loss);
+    auto t1 = reinterpret_cast<torch::Tensor *const>(input);
+    auto t2 = reinterpret_cast<torch::Tensor *const>(target);
+
+    validate_tensor(t1, "Input tensor");
+    validate_tensor(t2, "Target tensor");
+
+    // Set up options
+    namespace F = torch::nn::functional;
+    F::MSELossFuncOptions options;
+    options.reduction(get_libtorch_reduction_type(reduction_type));
+
+    // Create the optimizer and cast to torch_optim_t to return
+    std::move(*l) = F::mse_loss(*t1, *t2, options);
+  } catch (const std::exception &e) {
+    ctorch_error(std::string(e.what()) + " in torch_loss_mse");
+  }
+}
+
+void torch_loss_cross_entropy(torch_tensor_t loss, const torch_tensor_t input,
+                              const torch_tensor_t target,
+                              const torch_reduction_t reduction_type) {
+  try {
+    // Cast the parameters pointer into Tensor objects
+    auto l = reinterpret_cast<torch::Tensor *>(loss);
+    auto t1 = reinterpret_cast<torch::Tensor *const>(input);
+    auto t2 = reinterpret_cast<torch::Tensor *const>(target);
+
+    validate_tensor(t1, "Input tensor");
+    validate_tensor(t2, "Target tensor");
+
+    // Set up options
+    namespace F = torch::nn::functional;
+    F::CrossEntropyFuncOptions options;
+    options.reduction(get_libtorch_reduction_type(reduction_type));
+
+    // Create the optimizer and cast to torch_optim_t to return
+    std::move(*l) = F::cross_entropy(*t1, *t2, options);
+  } catch (const std::exception &e) {
+    ctorch_error(std::string(e.what()) + " in torch_loss_cross_entropy");
+  }
 }

@@ -124,6 +124,7 @@
                                 <a class="nav-link" href="../usage/generic_example.html">Generic Example</a>
               <a class="nav-link" href="../usage/worked_examples.html">Worked Examples</a>
               <a class="nav-link" href="../usage/tensor.html">Tensor API</a>
+              <a class="nav-link" href="../usage/optimizers.html">Optimizers API</a>
               <a class="nav-link" href="../usage/transposing.html">When to transpose data</a>
               <a class="nav-link" href="../usage/batching.html">Batching</a>
               <a class="nav-link" href="../usage/offline.html">Offline training</a>
@@ -185,6 +186,16 @@ consistently and correctly.</p>
 <li>Update the <code>CMakeLists.txt</code><ol>
 <li>Change <code>set(PACKAGE_VERSION X.Y.Z)</code></li>
 <li>Add the <code>CMakeLists.txt</code> to the git staging index</li>
+</ol>
+</li>
+<li>Update the <code>pyproject.toml</code><ol>
+<li>Change <code>version = "X.Y.Z"</code></li>
+<li>Add the <code>pyproject.toml</code> to the git staging index</li>
+</ol>
+</li>
+<li>Update the <code>CITATION.cff</code><ol>
+<li>Set <code>version: X.Y.Z</code> and <code>date-released: yyyy-mm-dd</code></li>
+<li>Add the <code>CITATION.cff</code> to the git staging index</li>
 </ol>
 </li>
 <li>Update code on the git remote:<ol>

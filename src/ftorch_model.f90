@@ -7,7 +7,6 @@
 module ftorch_model
   use, intrinsic :: iso_c_binding, only : c_null_ptr, c_ptr
   use ftorch_devices, only: torch_kCPU, torch_kCUDA, torch_kHIP, torch_kXPU, torch_kMPS
-  use ftorch_types, only: ftorch_int
   use ftorch_tensor, only: torch_tensor
 
   implicit none
@@ -26,7 +25,7 @@ module ftorch_model
 contains
 
   ! ============================================================================
-  ! --- Procedures for constructing tensors
+  ! --- Procedures for constructing models
   ! ============================================================================
 
   !> Loads a TorchScript nn.module (pre-trained PyTorch model saved with TorchScript)
@@ -35,10 +34,13 @@ contains
     use, intrinsic :: iso_c_binding, only : c_bool, c_int, c_null_char
     type(torch_model), intent(out) :: model    !! Returned deserialized model
     character(*), intent(in) :: filename       !! Filename of saved TorchScript model
-    integer(c_int), intent(in) :: device_type  !! Device type the tensor will live on (`torch_kCPU` or a GPU device type)
+    integer(c_int), intent(in) :: device_type
+        !! Device type the tensor will live on (`torch_kCPU` or a GPU device type)
     integer(c_int), optional, intent(in) :: device_index  !! Device index for GPU devices
-    logical, optional, intent(in) :: requires_grad  !! Whether gradients need to be computed for the created tensor
-    logical, optional, intent(in) :: is_training    !! Whether the model is being trained, rather than evaluated
+    logical, optional, intent(in) :: requires_grad
+        !! Whether gradients need to be computed for the created tensor
+    logical, optional, intent(in) :: is_training
+        !! Whether the model is being trained, rather than evaluated
     integer(c_int) :: device_index_value
     logical :: requires_grad_value  !! Whether gradients need to be computed for the created tensor
     logical :: is_training_value  !! Whether the model is being trained, rather than evaluated
@@ -46,7 +48,7 @@ contains
     interface
       function torch_jit_load_c(filename_c, device_type_c, device_index_c, &
                                 requires_grad_c, is_training_c) result(model_c) &
-          bind(c, name = 'torch_jit_load')
+          bind(c, name = "torch_jit_load")
         use, intrinsic :: iso_c_binding, only : c_bool, c_char, c_int, c_ptr
         implicit none
         character(c_char), intent(in) :: filename_c(*)
@@ -65,7 +67,7 @@ contains
       device_index_value = -1
     else
       device_index_value = 0
-    endif
+    end if
 
     if (.not. present(requires_grad)) then
       requires_grad_value = .false.
@@ -85,20 +87,45 @@ contains
                                logical(is_training_value, c_bool))
   end subroutine torch_model_load
 
+  !> Writes out a model to file in TorchScript format
+  subroutine torch_model_save(model, filename)
+    use, intrinsic :: iso_c_binding, only : c_null_char
+    type(torch_model), intent(in) :: model  !! Model to write out
+    character(*), intent(in) :: filename    !! Filename for saved TorchScript model
+
+    interface
+      subroutine torch_jit_save_c(model_c, filename_c) bind(c, name = "torch_jit_save")
+        use, intrinsic :: iso_c_binding, only : c_char, c_ptr
+        implicit none
+        type(c_ptr), value, intent(in) :: model_c
+        character(c_char), intent(in) :: filename_c(*)
+      end subroutine torch_jit_save_c
+    end interface
+
+    ! Need to append c_null_char at end of filename
+    call torch_jit_save_c(model%p, trim(adjustl(filename))//c_null_char)
+  end subroutine torch_model_save
+
   ! ============================================================================
   ! --- Procedures for performing inference
   ! ============================================================================
 
-  !> Performs a forward pass of the model with the input tensors
+  !| Performs a forward pass of the model with the input tensors
+  !
+  !  WARNING: If requires_grad=.true. then any association between the output_tensors and Fortran
+  !           arrays is lost. The output_tensors will instead point directly to the tensor objects
+  !           outputted from the model in Torch. This is required to track gradients through any
+  !           intermediate tensors (such as model weights) during backpropagation.
   subroutine torch_model_forward(model, input_tensors, output_tensors, requires_grad)
     use, intrinsic :: iso_c_binding, only : c_bool, c_ptr, c_int, c_loc
     type(torch_model), intent(in) :: model  !! Model
     type(torch_tensor), intent(in), dimension(:) :: input_tensors   !! Array of Input tensors
     type(torch_tensor), intent(in), dimension(:) :: output_tensors  !! Returned output tensors
-    logical, optional, intent(in) :: requires_grad  !! Whether gradients need to be computed for the created tensor
+    logical, optional, intent(in) :: requires_grad
+        !! Whether gradients need to be computed for the created tensor
     logical :: requires_grad_value  !! Whether gradients need to be computed for the created tensor
 
-    integer(ftorch_int) :: i
+    integer(c_int) :: i
     integer(c_int)      :: n_inputs
     integer(c_int)      :: n_outputs
     type(c_ptr), dimension(size(input_tensors)), target  :: input_ptrs
@@ -107,7 +134,7 @@ contains
     interface
       subroutine torch_jit_model_forward_c(model_c, input_tensors_c, n_inputs_c, &
                                            output_tensors_c, n_outputs_c, requires_grad_c) &
-          bind(c, name = 'torch_jit_module_forward')
+          bind(c, name = "torch_jit_module_forward")
         use, intrinsic :: iso_c_binding, only : c_bool, c_ptr, c_int
         implicit none
         type(c_ptr), value, intent(in) :: model_c
@@ -144,7 +171,7 @@ contains
   end subroutine torch_model_forward
 
   ! ============================================================================
-  ! --- Procedures for interrogating tensors
+  ! --- Procedures for interrogating models
   ! ============================================================================
 
   !| Prints the parameters associated with a model
@@ -156,7 +183,7 @@ contains
 
     interface
       subroutine torch_jit_model_print_parameters_c(model_c) &
-          bind(c, name = 'torch_jit_module_print_parameters')
+          bind(c, name = "torch_jit_module_print_parameters")
         use, intrinsic :: iso_c_binding, only : c_ptr
         implicit none
         type(c_ptr), value, intent(in) :: model_c
@@ -173,7 +200,7 @@ contains
 
     interface
       function torch_jit_model_is_training_c(model_c) result(is_training_c) &
-          bind(c, name = 'torch_jit_module_is_training')
+          bind(c, name = "torch_jit_module_is_training")
         use, intrinsic :: iso_c_binding, only : c_bool, c_ptr
         implicit none
         type(c_ptr), value, intent(in) :: model_c
@@ -183,6 +210,45 @@ contains
 
     is_training = torch_jit_model_is_training_c(self%p)
   end function torch_model_is_training
+
+  !> Extracts the parameters from a model
+  subroutine torch_model_parameters(model, output_tensors)
+    use, intrinsic :: iso_c_binding, only : c_associated, c_int, c_loc, c_ptr
+    type(torch_model), intent(in) :: model  !! Model
+    type(torch_tensor), intent(inout), dimension(:) :: output_tensors  !! Returned output tensors
+
+    integer(c_int) :: n_outputs
+    integer :: i
+    type(c_ptr), dimension(size(output_tensors)), target :: output_ptrs
+
+    interface
+      subroutine torch_jit_model_parameters_c(model_c, output_tensors_c, n_outputs_c) &
+          bind(c, name = "torch_jit_module_parameters")
+        use, intrinsic :: iso_c_binding, only : c_ptr, c_int
+        implicit none
+        type(c_ptr), value, intent(in) :: model_c
+        type(c_ptr), value, intent(in) :: output_tensors_c
+        integer(c_int), value, intent(in) :: n_outputs_c
+      end subroutine torch_jit_model_parameters_c
+    end interface
+
+    ! Check the tensors aren't already associated
+    n_outputs = size(output_tensors)
+    do i = 1, n_outputs
+      if (c_associated(output_tensors(i)%p)) then
+        write(*,*) "Error :: tensor pointer will be lost in call to torch_model_parameters"
+        stop 1
+      end if
+    end do
+
+    ! Get the parameters that were created during model construction
+    call torch_jit_model_parameters_c(model%p, c_loc(output_ptrs), n_outputs)
+
+    ! Copy updated pointers back to output tensors
+    do i = 1, n_outputs
+      output_tensors(i)%p = output_ptrs(i)
+    end do
+  end subroutine torch_model_parameters
 
   ! ============================================================================
   ! --- Procedures for deallocating models
@@ -195,7 +261,7 @@ contains
 
     interface
       subroutine torch_jit_model_delete_c(model_c) &
-          bind(c, name = 'torch_jit_module_delete')
+          bind(c, name = "torch_jit_module_delete")
         use, intrinsic :: iso_c_binding, only : c_ptr
         implicit none
         type(c_ptr), value, intent(in) :: model_c

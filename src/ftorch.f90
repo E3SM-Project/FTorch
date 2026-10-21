@@ -8,10 +8,11 @@ module ftorch
   use ftorch_devices, only: torch_kCPU, torch_kCUDA, torch_kHIP, torch_kXPU, torch_kMPS
 
   use ftorch_types, only: torch_kInt8, torch_kInt16, torch_kInt32, torch_kInt64, &
-                          torch_kFloat32, torch_kFloat64, ftorch_int
+                          torch_kFloat32, torch_kFloat64
 
   use ftorch_tensor, only: torch_tensor, &  !--------------- (type)
                            torch_tensor_from_array, &  !---- (constructors)
+                           torch_tensor_from_array_legacy, &
                            torch_tensor_from_blob, &
                            torch_tensor_empty, &
                            torch_tensor_zeros, &
@@ -44,16 +45,36 @@ module ftorch
                           torch_model_delete, &  !-------------- (destructor)
                           torch_model_print_parameters, &  !---- (interrogation)
                           torch_model_is_training, &
-                          torch_model_forward  !---------------- (procedures)
+                          torch_model_parameters, &
+                          torch_model_forward, & !-------------- (procedures)
+                          torch_model_save
+
+  use ftorch_optim, only: torch_optim, &  !--------------------- (type)
+                          torch_optim_SGD, &  !----------------- (constructors)
+                          torch_optim_Adam, &
+                          torch_optim_AdamW, &
+                          torch_optim_delete, &  !-------------- (destructor)
+                          torch_optim_zero_grad, &  !----------- (procedures)
+                          torch_optim_step
+
+  use ftorch_loss, only: torch_loss_mse, &
+                         torch_loss_cross_entropy
+
+  use ftorch_test_utils, only: allclose, isclose, test_print
 
   implicit none
 
+  ! Members public by default
   public
 
   !> Interface for deleting generic torch objects
   interface torch_delete
     module procedure torch_tensor_delete
     module procedure torch_model_delete
+    module procedure torch_optim_delete
   end interface
+
+  ! Mark test utils as private
+  private :: allclose, isclose, test_print
 
 end module ftorch
